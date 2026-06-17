@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Signal Light · ESP32 Claude Status</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div>
+        <h1>Signal Light</h1>
+        <p class="brand-sub">ESP32 · Claude Code status indicator</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="filter-group" role="tablist" aria-label="agent filter">
+        <button class="filter-btn is-active" data-scope="all" type="button">All <span class="filter-count" id="cnt-all">0</span></button>
+        <button class="filter-btn" data-scope="claude" type="button">Claude <span class="filter-count" id="cnt-claude">0</span></button>
+        <button class="filter-btn" data-scope="codex" type="button">Codex <span class="filter-count" id="cnt-codex">0</span></button>
+      </div>
+      <div id="board-pill" class="pill pill-muted">
+        <span class="pill-dot"></span>
+        <span id="board-text">connecting…</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero: live mirror -->
+    <section class="hero panel">
+      <div class="hero-grid">
+        <div class="hero-led">
+          <svg viewBox="0 0 220 460" id="live-led" class="led-svg led-svg-big" aria-label="live status mirror">
+            <defs>
+              <radialGradient id="g-r" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stop-color="#ff6464" />
+                <stop offset="100%" stop-color="#3a0a0a" />
+              </radialGradient>
+              <radialGradient id="g-y" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stop-color="#ffe066" />
+                <stop offset="100%" stop-color="#3a2e0a" />
+              </radialGradient>
+              <radialGradient id="g-g" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stop-color="#5cffb5" />
+                <stop offset="100%" stop-color="#0a3a25" />
+              </radialGradient>
+              <filter id="blur-r" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="14" />
+              </filter>
+              <filter id="blur-y" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="14" />
+              </filter>
+              <filter id="blur-g" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="14" />
+              </filter>
+            </defs>
+            <rect class="led-case" x="20" y="10" width="180" height="440" rx="22" />
+            <!-- glow underlays -->
+            <circle class="glow glow-r" cx="110" cy="90"  r="70" filter="url(#blur-r)" />
+            <circle class="glow glow-y" cx="110" cy="230" r="70" filter="url(#blur-y)" />
+            <circle class="glow glow-g" cx="110" cy="370" r="70" filter="url(#blur-g)" />
+            <!-- lenses -->
+            <circle class="lens lens-r" cx="110" cy="90"  r="56" />
+            <circle class="lens lens-y" cx="110" cy="230" r="56" />
+            <circle class="lens lens-g" cx="110" cy="370" r="56" />
+          </svg>
+        </div>
+        <div class="hero-info">
+          <div class="hero-label">Current effect</div>
+          <div class="hero-line">
+            <div id="cur-effect-name" class="hero-effect">—</div>
+            <div id="tempo-chip" class="tempo-chip hidden" title="动画速度: session 越多越快">
+              <span id="tempo-val">1.0×</span>
+              <span class="tempo-bars">
+                <i></i><i></i><i></i><i></i><i></i>
+              </span>
+            </div>
+          </div>
+          <div id="cur-effect-summary" class="hero-summary">waiting for first event…</div>
+
+          <div id="override-banner" class="override hidden">
+            <span class="override-tag" id="override-tag">manual</span>
+            <span id="override-text"></span>
+          </div>
+
+          <div id="winner-banner" class="winner hidden">
+            <span class="winner-tag">WINNING</span>
+            <span id="winner-text"></span>
+          </div>
+
+          <div class="hero-meta">
+            <div><span class="meta-key">board host</span><span id="meta-host">—</span></div>
+            <div><span class="meta-key">last send</span><span id="meta-last-send">—</span></div>
+            <div><span class="meta-key">connects</span><span id="meta-connects">0</span></div>
+            <div><span class="meta-key">errors</span><span id="meta-errors">0</span></div>
+            <div><span class="meta-key">last error</span><span id="meta-last-err">—</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Display profile -->
+    <section class="panel display-panel">
+      <div class="panel-head">
+        <h2>显示配置 (profile)</h2>
+        <p class="panel-sub">桌上余光友好(calm) vs 高对比演示(vivid),切换后立刻生效</p>
+      </div>
+      <div class="display-grid">
+        <div class="display-section">
+          <div class="display-label">profile</div>
+          <div id="profile-row" class="profile-row"></div>
+        </div>
+        <div class="display-section">
+          <div class="display-label">亮度 <span id="brightness-val" class="display-val">60%</span></div>
+          <input type="range" id="brightness-slider" class="brightness-slider" min="5" max="100" step="5" value="60" />
+        </div>
+        <div class="display-section">
+          <label class="toggle-row">
+            <span>
+              <span class="display-label" style="display:inline">tempo 加速</span>
+              <span class="display-sub">session 多则灯效变快(可能像警报,推荐桌上关闭)</span>
+            </span>
+            <input type="checkbox" id="tempo-toggle" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <!-- Demo scenarios -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>剧本演示</h2>
+        <p class="panel-sub">一键播一段多 session 剧本,看灯如何反应。不需要开 Claude / Codex</p>
+      </div>
+      <div id="demo-row" class="demo-row">
+        <button class="demo-btn" data-demo="solo">
+          <span class="demo-icon">🎬</span>
+          <span class="demo-info">
+            <span class="demo-name">Solo Claude</span>
+            <span class="demo-desc">单 session: 思考 → 跑工具 → 完成</span>
+          </span>
+          <span class="demo-dur">~12s</span>
+        </button>
+        <button class="demo-btn" data-demo="two">
+          <span class="demo-icon">🎬</span>
+          <span class="demo-info">
+            <span class="demo-name">Two agents</span>
+            <span class="demo-desc">Claude + Codex 并跑,Codex 弹权限,各自完成</span>
+          </span>
+          <span class="demo-dur">~18s</span>
+        </button>
+        <button class="demo-btn" data-demo="rush">
+          <span class="demo-icon">🚦</span>
+          <span class="demo-info">
+            <span class="demo-name">Rush hour</span>
+            <span class="demo-desc">5 个 session 涌入看 tempo 飙升,1 个出错,逐个 Stop</span>
+          </span>
+          <span class="demo-dur">~25s</span>
+        </button>
+        <button class="demo-btn" data-demo="failures">
+          <span class="demo-icon">⚠️</span>
+          <span class="demo-info">
+            <span class="demo-name">Failures showcase</span>
+            <span class="demo-desc">PostToolUse error / AskUserQuestion / rate_limit / billing_error 四种错误路径</span>
+          </span>
+          <span class="demo-dur">~24s</span>
+        </button>
+      </div>
+      <div id="demo-runner" class="demo-runner hidden">
+        <div class="demo-progress-wrap">
+          <div id="demo-progress" class="demo-progress"></div>
+        </div>
+        <div class="demo-status">
+          <span id="demo-step">…</span>
+          <button id="demo-cancel" class="demo-cancel" type="button">取消</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Manual test bar -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Manual test</h2>
+        <p class="panel-sub">点一下,强制把该灯效发到板子(默认 hold 6 秒,之后自动回到 Claude 实际状态)</p>
+      </div>
+      <div id="manual-row" class="manual-row"></div>
+    </section>
+
+    <!-- Effects gallery -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Effects gallery</h2>
+        <p class="panel-sub">所有已配置的灯效。每张卡里 SVG 三色灯实时演,跟板子上看到的一致</p>
+      </div>
+      <div id="gallery" class="gallery"></div>
+    </section>
+
+    <!-- Sessions -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Active sessions</h2>
+        <p class="panel-sub">每个 Claude Code 窗口的最新事件。优先级聚合后取最高的那个上灯</p>
+      </div>
+      <div id="sessions" class="sessions">
+        <div class="sessions-empty">no active sessions</div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div>signal-light · localhost only · config: <code id="cfg-path">~/.signal_light/config.json</code></div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

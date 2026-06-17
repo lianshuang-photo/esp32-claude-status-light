@@ -1,0 +1,257 @@
+{
+  "version": 1,
+  "board": {
+    "host": "192.168.31.106",
+    "port": 8080,
+    "reconnect_ms": 2000,
+    "heartbeat_ms": 5000,
+    "active_low": false
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 7878
+  },
+  "session": {
+    "ttl_seconds": 120,
+    "sweep_seconds": 15
+  },
+  "display": {
+    "profile": "calm",
+    "brightness": 0.6,
+    "tempo_enabled": false
+  },
+  "profiles": {
+    "vivid": {
+      "name": "Vivid",
+      "summary": "原版灯效:三色循环、紧闪、tempo 加速。适合演示和远观",
+      "overrides": {}
+    },
+    "calm": {
+      "name": "Calm (desktop-friendly)",
+      "summary": "桌上余光友好:单色为主、慢节奏、低亮度。推荐默认",
+      "overrides": {
+        "thinking": {
+          "summary": "绿灯轻轻喘气,3s 周期",
+          "frames": [
+            { "r": 0, "y": 0, "g": 30,  "ms": 220 },
+            { "r": 0, "y": 0, "g": 60,  "ms": 220 },
+            { "r": 0, "y": 0, "g": 90,  "ms": 220 },
+            { "r": 0, "y": 0, "g": 120, "ms": 260 },
+            { "r": 0, "y": 0, "g": 90,  "ms": 220 },
+            { "r": 0, "y": 0, "g": 60,  "ms": 220 },
+            { "r": 0, "y": 0, "g": 30,  "ms": 220 }
+          ]
+        },
+        "working": {
+          "summary": "绿↔黄柔和交替,无红色无快闪",
+          "frames": [
+            { "r": 0, "y": 0,   "g": 120, "ms": 400 },
+            { "r": 0, "y": 40,  "g": 100, "ms": 400 },
+            { "r": 0, "y": 80,  "g": 60,  "ms": 400 },
+            { "r": 0, "y": 100, "g": 30,  "ms": 400 },
+            { "r": 0, "y": 80,  "g": 60,  "ms": 400 },
+            { "r": 0, "y": 40,  "g": 100, "ms": 400 }
+          ]
+        },
+        "attention": {
+          "summary": "黄灯常亮(余光易识别,无闪烁)",
+          "frames": [{ "r": 0, "y": 120, "g": 0, "ms": null }]
+        },
+        "permission": {
+          "summary": "红灯慢闪 (600/400),紧急但不刺眼",
+          "frames": [
+            { "r": 200, "y": 0, "g": 0, "ms": 600 },
+            { "r": 0,   "y": 0, "g": 0, "ms": 400 }
+          ]
+        },
+        "blocked": {
+          "summary": "红常亮 + 偶尔脉冲,持续问题但不像警报",
+          "frames": [
+            { "r": 200, "y": 0, "g": 0, "ms": 3000 },
+            { "r": 60,  "y": 0, "g": 0, "ms": 200 }
+          ]
+        },
+        "idle": {
+          "summary": "绿色微亮常亮,不刺眼",
+          "frames": [{ "r": 0, "y": 0, "g": 80, "ms": null }]
+        }
+      }
+    }
+  },
+  "effects": [
+    {
+      "id": "idle",
+      "name": "Idle",
+      "summary": "Agent 空闲,绿灯常亮",
+      "color_hint": "green",
+      "frames": [{ "r": 0, "y": 0, "g": 200, "ms": null }]
+    },
+    {
+      "id": "thinking",
+      "name": "Thinking",
+      "summary": "Agent 正在思考,绿灯呼吸",
+      "color_hint": "green",
+      "frames": [
+        { "r": 0, "y": 0, "g": 30,  "ms": 90 },
+        { "r": 0, "y": 0, "g": 80,  "ms": 90 },
+        { "r": 0, "y": 0, "g": 140, "ms": 90 },
+        { "r": 0, "y": 0, "g": 200, "ms": 90 },
+        { "r": 0, "y": 0, "g": 255, "ms": 120 },
+        { "r": 0, "y": 0, "g": 200, "ms": 90 },
+        { "r": 0, "y": 0, "g": 140, "ms": 90 },
+        { "r": 0, "y": 0, "g": 80,  "ms": 90 },
+        { "r": 0, "y": 0, "g": 30,  "ms": 90 }
+      ]
+    },
+    {
+      "id": "working",
+      "name": "Working",
+      "summary": "Agent 在跑工具,三色循环呼吸",
+      "color_hint": "cycle",
+      "frames": [
+        { "r": 0,   "y": 0,   "g": 40,  "ms": 100 },
+        { "r": 0,   "y": 0,   "g": 120, "ms": 100 },
+        { "r": 0,   "y": 0,   "g": 220, "ms": 130 },
+        { "r": 0,   "y": 0,   "g": 120, "ms": 100 },
+        { "r": 0,   "y": 0,   "g": 40,  "ms": 100 },
+        { "r": 0,   "y": 40,  "g": 0,   "ms": 100 },
+        { "r": 0,   "y": 120, "g": 0,   "ms": 100 },
+        { "r": 0,   "y": 220, "g": 0,   "ms": 130 },
+        { "r": 0,   "y": 120, "g": 0,   "ms": 100 },
+        { "r": 0,   "y": 40,  "g": 0,   "ms": 100 },
+        { "r": 40,  "y": 0,   "g": 0,   "ms": 100 },
+        { "r": 120, "y": 0,   "g": 0,   "ms": 100 },
+        { "r": 220, "y": 0,   "g": 0,   "ms": 130 },
+        { "r": 120, "y": 0,   "g": 0,   "ms": 100 },
+        { "r": 40,  "y": 0,   "g": 0,   "ms": 100 }
+      ]
+    },
+    {
+      "id": "attention",
+      "name": "Attention",
+      "summary": "需要你看一眼,黄灯慢闪",
+      "color_hint": "yellow",
+      "frames": [
+        { "r": 0, "y": 230, "g": 0, "ms": 350 },
+        { "r": 0, "y": 0,   "g": 0, "ms": 250 }
+      ]
+    },
+    {
+      "id": "permission",
+      "name": "Permission",
+      "summary": "等待你批准,红灯紧闪",
+      "color_hint": "red",
+      "frames": [
+        { "r": 255, "y": 0, "g": 0, "ms": 180 },
+        { "r": 0,   "y": 0, "g": 0, "ms": 180 }
+      ]
+    },
+    {
+      "id": "blocked",
+      "name": "Blocked",
+      "summary": "出错/阻塞,红黄交替",
+      "color_hint": "red",
+      "frames": [
+        { "r": 255, "y": 0,   "g": 0, "ms": 180 },
+        { "r": 0,   "y": 255, "g": 0, "ms": 180 }
+      ]
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "summary": "完成,绿灯短暂强闪",
+      "color_hint": "green",
+      "frames": [
+        { "r": 0, "y": 0, "g": 255, "ms": 120 },
+        { "r": 0, "y": 0, "g": 0,   "ms": 100 },
+        { "r": 0, "y": 0, "g": 255, "ms": 120 },
+        { "r": 0, "y": 0, "g": 0,   "ms": 100 },
+        { "r": 0, "y": 0, "g": 200, "ms": null }
+      ]
+    },
+    {
+      "id": "offline",
+      "name": "Board Offline",
+      "summary": "板子掉线,黄红交替慢闪",
+      "color_hint": "red",
+      "frames": [
+        { "r": 60, "y": 60, "g": 0, "ms": 800 },
+        { "r": 0,  "y": 0,  "g": 0, "ms": 800 }
+      ]
+    },
+    {
+      "id": "off",
+      "name": "Off",
+      "summary": "全灭",
+      "color_hint": "off",
+      "frames": [{ "r": 0, "y": 0, "g": 0, "ms": null }]
+    }
+  ],
+  "event_bindings": {
+    "SessionStart":             "idle",
+    "UserPromptSubmit":         "thinking",
+    "UserPromptExpansion":      "thinking",
+    "PreToolUse":               "working",
+    "PostToolUse":              "working",
+    "PostToolBatch":            "working",
+    "PreCompact":               "working",
+    "PostCompact":              "working",
+    "SubagentStart":            "working",
+    "SubagentStop":             "working",
+    "ElicitationResult":        "working",
+    "Notification":             "attention",
+    "Elicitation":              "permission",
+    "PermissionRequest":        "permission",
+    "PreToolUse:AskUserQuestion":  "attention",
+    "PostToolUse:AskUserQuestion": "working",
+    "PostToolUseFailure":       "blocked",
+    "PermissionDenied":         "blocked",
+    "StopFailure":              "blocked",
+    "Stop":                     "done",
+    "SessionEnd":               "idle",
+    "_blocked":                 "blocked",
+    "_permission":              "permission",
+    "_attention":               "attention",
+    "_offline":                 "offline"
+  },
+  "event_priority": [
+    "_blocked",
+    "PostToolUseFailure",
+    "PermissionDenied",
+    "StopFailure",
+    "_permission",
+    "PermissionRequest",
+    "Elicitation",
+    "_attention",
+    "Notification",
+    "PreToolUse:AskUserQuestion",
+    "_offline",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolBatch",
+    "PostToolUse:AskUserQuestion",
+    "PreCompact",
+    "PostCompact",
+    "SubagentStart",
+    "SubagentStop",
+    "ElicitationResult",
+    "UserPromptSubmit",
+    "UserPromptExpansion",
+    "Stop",
+    "SessionStart",
+    "SessionEnd"
+  ],
+  "ignored_events": [
+    "MessageDisplay",
+    "InstructionsLoaded",
+    "ConfigChange",
+    "CwdChanged",
+    "FileChanged",
+    "WorktreeCreate",
+    "WorktreeRemove",
+    "Setup",
+    "TaskCreated",
+    "TaskCompleted",
+    "TeammateIdle"
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "//": "Drop the entries below into ~/.codex/hooks.json. Codex passes the event name as a positional argument (not via stdin), so we pass --agent codex and the event name to hook_client.py.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/cherryai/xhs_esp32_claude_status_light/reconstructed/daemon/hook_client.py --agent codex SessionStart",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/cherryai/xhs_esp32_claude_status_light/reconstructed/daemon/hook_client.py --agent codex UserPromptSubmit",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/cherryai/xhs_esp32_claude_status_light/reconstructed/daemon/hook_client.py --agent codex PreToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/cherryai/xhs_esp32_claude_status_light/reconstructed/daemon/hook_client.py --agent codex PostToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/cherryai/xhs_esp32_claude_status_light/reconstructed/daemon/hook_client.py --agent codex PermissionRequest",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/cherryai/xhs_esp32_claude_status_light/reconstructed/daemon/hook_client.py --agent codex Stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/cherryai/xhs_esp32_claude_status_light/reconstructed/daemon/hook_client.py --agent codex SessionEnd",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Arduino build output
+build/
+*.bin
+*.elf
+*.map
+*.hex
+
+# macOS
+.DS_Store
+._*
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# User runtime state (created on first daemon run)
+.signal_light/
+
+# Local backup files from install_hooks.py
+*.bak.*
+
+# Demo capture artifacts
+*.mp4
+*.mov
+preview/
