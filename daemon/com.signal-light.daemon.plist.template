@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.signal-light.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>__DAEMON_PATH__</string>
+  </array>
+
+  <!-- Keep alive: relaunch if the daemon ever exits. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Start at user login. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- If it crashes hard, wait a few seconds before relaunching. -->
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/daemon.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/daemon.err.log</string>
+
+  <!-- Working directory so relative paths inside daemon code work. -->
+  <key>WorkingDirectory</key>
+  <string>__WORKING_DIR__</string>
+</dict>
+</plist>

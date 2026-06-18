@@ -15,6 +15,13 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_system.h>
+#include <Preferences.h>
+
+// Persistent storage for "which Wi-Fi network worked last time", so reboots
+// can connect in ~1s instead of going through every entry from the top.
+Preferences prefs;
+const char *NVS_NAMESPACE = "signal";
+const char *NVS_KEY_WIFI  = "last_wifi";
 
 // Add as many Wi-Fi networks as you want. The board tries them in order on
 // every reconnect cycle and stays on the first one that works.
@@ -39,7 +46,7 @@ const uint8_t PIN_GREEN  = 7;
 const bool    ACTIVE_LOW = true;
 
 const uint16_t TCP_PORT         = 8080;
-const uint32_t WATCHDOG_MS      = 30000;
+const uint32_t WATCHDOG_MS      = 90000;
 const uint16_t CLIENT_RX_BUFFER = 2048;
 
 struct Frame { uint8_t r, y, g; uint16_t ms; };
@@ -304,6 +311,16 @@ void setup() {
   hardOff(PIN_YELLOW);
   hardOff(PIN_GREEN);
   writeRgb(0, 0, 0);
+
+  // Load the index of the Wi-Fi that worked last boot. Falls back to 0 the
+  // first time the board ever runs this firmware.
+  prefs.begin(NVS_NAMESPACE, false);
+  uint8_t savedIdx = prefs.getUChar(NVS_KEY_WIFI, 0);
+  if (savedIdx < WIFI_NETWORKS_COUNT) {
+    currentWifiIdx = savedIdx;
+    Serial.printf("[WIFI] resuming with last-known network #%u\n", (unsigned)savedIdx);
+  }
+
   startWifi();
   server.begin();
   lastDaemonMsgMs = millis();
@@ -322,6 +339,12 @@ void loop() {
       Serial.println(WiFi.localIP());
       setSolid(0, 0, 0);
       lastDaemonMsgMs = millis();
+      // Remember which network worked so the next boot skips straight to it.
+      uint8_t saved = prefs.getUChar(NVS_KEY_WIFI, 255);
+      if (saved != currentWifiIdx) {
+        prefs.putUChar(NVS_KEY_WIFI, (uint8_t)currentWifiIdx);
+        Serial.printf("[WIFI] saved last-known network #%u to NVS\n", (unsigned)currentWifiIdx);
+      }
     }
   }
 

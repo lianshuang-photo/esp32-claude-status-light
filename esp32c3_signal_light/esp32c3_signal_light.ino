@@ -25,6 +25,12 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_system.h>
+#include <Preferences.h>
+
+// Persistent storage so reboots can reconnect to last-known good Wi-Fi in ~1s.
+Preferences prefs;
+const char *NVS_NAMESPACE = "signal";
+const char *NVS_KEY_WIFI  = "last_wifi";
 
 // ===== Change these before flashing =====
 // Add as many Wi-Fi networks as you want. The board tries them in order on
@@ -53,7 +59,7 @@ const bool    ACTIVE_LOW = true;
 
 // ===== Network =====
 const uint16_t TCP_PORT          = 8080;
-const uint32_t WATCHDOG_MS       = 30000;   // reboot if no msg for this long
+const uint32_t WATCHDOG_MS       = 90000;   // reboot if no msg for this long
 const uint16_t CLIENT_RX_BUFFER  = 2048;    // one frame batch fits comfortably
 
 // ===== Effect storage =====
@@ -310,6 +316,11 @@ void setup() {
   hardOff(PIN_GREEN);
   writeRgb(0, 0, 0);
 
+  // Load last-known-good Wi-Fi index from NVS.
+  prefs.begin(NVS_NAMESPACE, false);
+  uint8_t savedIdx = prefs.getUChar(NVS_KEY_WIFI, 0);
+  if (savedIdx < WIFI_NETWORKS_COUNT) currentWifiIdx = savedIdx;
+
   startWifi();
   server.begin();
   lastDaemonMsgMs = millis();
@@ -329,6 +340,11 @@ void loop() {
       // Default to off until daemon sends an effect.
       setSolid(0, 0, 0);
       lastDaemonMsgMs = millis();
+      // Remember which network worked → next boot connects in ~1s.
+      uint8_t saved = prefs.getUChar(NVS_KEY_WIFI, 255);
+      if (saved != currentWifiIdx) {
+        prefs.putUChar(NVS_KEY_WIFI, (uint8_t)currentWifiIdx);
+      }
     }
   }
 
