@@ -73,12 +73,37 @@ uint32_t lastWifiAttemptMs = 0;
 char lineBuf[CLIENT_RX_BUFFER];
 size_t lineLen = 0;
 
-static inline uint8_t toOutput(uint8_t v) { return ACTIVE_LOW ? (uint8_t)(255 - v) : v; }
+// ===== Software PWM =====
+// We deliberately avoid ESP32's hardware LEDC (analogWrite) because once a GPIO
+// gets attached to a LEDC channel, subsequent digitalWrite() calls on that pin
+// become unreliable on ESP32-C3 — leading to "Off doesn't actually turn off".
+// A 1 kHz software PWM in the main loop is more than enough for a status LED
+// and turns OFF cleanly every time.
+const uint16_t SW_PWM_PERIOD_US = 1000;
+const uint8_t  SW_PWM_LEVELS    = 8;
+volatile uint8_t pwmDutyR = 0, pwmDutyY = 0, pwmDutyG = 0;
+
+static inline void hardOn (uint8_t pin) { digitalWrite(pin, ACTIVE_LOW ? LOW  : HIGH); }
+static inline void hardOff(uint8_t pin) { digitalWrite(pin, ACTIVE_LOW ? HIGH : LOW ); }
 
 void writeRgb(uint8_t r, uint8_t y, uint8_t g) {
-  analogWrite(PIN_RED,    toOutput(r));
-  analogWrite(PIN_YELLOW, toOutput(y));
-  analogWrite(PIN_GREEN,  toOutput(g));
+  pwmDutyR = (r == 0) ? 0 : (uint8_t)((uint16_t)r * SW_PWM_LEVELS / 255 + 1);
+  pwmDutyY = (y == 0) ? 0 : (uint8_t)((uint16_t)y * SW_PWM_LEVELS / 255 + 1);
+  pwmDutyG = (g == 0) ? 0 : (uint8_t)((uint16_t)g * SW_PWM_LEVELS / 255 + 1);
+  if (pwmDutyR > SW_PWM_LEVELS) pwmDutyR = SW_PWM_LEVELS;
+  if (pwmDutyY > SW_PWM_LEVELS) pwmDutyY = SW_PWM_LEVELS;
+  if (pwmDutyG > SW_PWM_LEVELS) pwmDutyG = SW_PWM_LEVELS;
+}
+
+void tickSoftPwm() {
+  const uint16_t slotUs = SW_PWM_PERIOD_US / SW_PWM_LEVELS;
+  uint8_t dr = pwmDutyR, dy = pwmDutyY, dg = pwmDutyG;
+  for (uint8_t slot = 0; slot < SW_PWM_LEVELS; slot++) {
+    (slot < dr) ? hardOn(PIN_RED)    : hardOff(PIN_RED);
+    (slot < dy) ? hardOn(PIN_YELLOW) : hardOff(PIN_YELLOW);
+    (slot < dg) ? hardOn(PIN_GREEN)  : hardOff(PIN_GREEN);
+    delayMicroseconds(slotUs);
+  }
 }
 
 void setEffectFromFrames(const Frame *frames, size_t n) {
@@ -266,9 +291,11 @@ void setup() {
   pinMode(PIN_RED, OUTPUT);
   pinMode(PIN_YELLOW, OUTPUT);
   pinMode(PIN_GREEN, OUTPUT);
-  analogWriteResolution(PIN_RED,    8);
-  analogWriteResolution(PIN_YELLOW, 8);
-  analogWriteResolution(PIN_GREEN,  8);
+  // No analogWriteResolution() / ledcSetup() — software PWM only, so OFF
+  // is genuinely OFF and digitalWrite stays authoritative.
+  hardOff(PIN_RED);
+  hardOff(PIN_YELLOW);
+  hardOff(PIN_GREEN);
   writeRgb(0, 0, 0);
 
   startWifi();
@@ -320,5 +347,7 @@ void loop() {
   }
 
   tickAnimation();
-  delay(1);
+  // Software-PWM tick replaces delay(1). One pass through SW_PWM_LEVELS
+  // slots × ~125us = ~1ms, so loop cadence stays the same.
+  tickSoftPwm();
 }
