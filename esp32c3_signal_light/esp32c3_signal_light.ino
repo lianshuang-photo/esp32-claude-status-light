@@ -73,18 +73,31 @@ uint32_t lastWifiAttemptMs = 0;
 char lineBuf[CLIENT_RX_BUFFER];
 size_t lineLen = 0;
 
-// ===== Software PWM =====
-// We deliberately avoid ESP32's hardware LEDC (analogWrite) because once a GPIO
-// gets attached to a LEDC channel, subsequent digitalWrite() calls on that pin
-// become unreliable on ESP32-C3 — leading to "Off doesn't actually turn off".
-// A 1 kHz software PWM in the main loop is more than enough for a status LED
-// and turns OFF cleanly every time.
-const uint16_t SW_PWM_PERIOD_US = 1000;
-const uint8_t  SW_PWM_LEVELS    = 8;
+// ===== Software PWM driven by a hardware timer ISR =====
+// We avoid ESP32's hardware LEDC (analogWrite) because once a GPIO gets
+// attached to a LEDC channel on ESP32-C3, subsequent digitalWrite() calls
+// become unreliable — "OFF doesn't actually turn off".
+//
+// Driving the PWM from loop() caused a visible "dip" every ~1 s whenever
+// Wi-Fi or TCP work stretched the gap between PWM ticks. Moving the tick
+// into a hardware timer ISR guarantees a rock-steady cadence regardless of
+// what loop() is doing.
+const uint8_t  SW_PWM_LEVELS = 16;
 volatile uint8_t pwmDutyR = 0, pwmDutyY = 0, pwmDutyG = 0;
+volatile uint8_t pwmSlot = 0;
+hw_timer_t *pwmTimer = nullptr;
 
 static inline void hardOn (uint8_t pin) { digitalWrite(pin, ACTIVE_LOW ? LOW  : HIGH); }
 static inline void hardOff(uint8_t pin) { digitalWrite(pin, ACTIVE_LOW ? HIGH : LOW ); }
+
+void IRAM_ATTR pwmIsr() {
+  uint8_t slot = pwmSlot;
+  uint8_t dr = pwmDutyR, dy = pwmDutyY, dg = pwmDutyG;
+  (slot < dr) ? hardOn(PIN_RED)    : hardOff(PIN_RED);
+  (slot < dy) ? hardOn(PIN_YELLOW) : hardOff(PIN_YELLOW);
+  (slot < dg) ? hardOn(PIN_GREEN)  : hardOff(PIN_GREEN);
+  pwmSlot = (slot + 1) % SW_PWM_LEVELS;
+}
 
 void writeRgb(uint8_t r, uint8_t y, uint8_t g) {
   pwmDutyR = (r == 0) ? 0 : (uint8_t)((uint16_t)r * SW_PWM_LEVELS / 255 + 1);
@@ -95,15 +108,10 @@ void writeRgb(uint8_t r, uint8_t y, uint8_t g) {
   if (pwmDutyG > SW_PWM_LEVELS) pwmDutyG = SW_PWM_LEVELS;
 }
 
-void tickSoftPwm() {
-  const uint16_t slotUs = SW_PWM_PERIOD_US / SW_PWM_LEVELS;
-  uint8_t dr = pwmDutyR, dy = pwmDutyY, dg = pwmDutyG;
-  for (uint8_t slot = 0; slot < SW_PWM_LEVELS; slot++) {
-    (slot < dr) ? hardOn(PIN_RED)    : hardOff(PIN_RED);
-    (slot < dy) ? hardOn(PIN_YELLOW) : hardOff(PIN_YELLOW);
-    (slot < dg) ? hardOn(PIN_GREEN)  : hardOff(PIN_GREEN);
-    delayMicroseconds(slotUs);
-  }
+void pwmTimerStart() {
+  pwmTimer = timerBegin(1000000);          // 1 MHz: alarm count == us
+  timerAttachInterrupt(pwmTimer, &pwmIsr);
+  timerAlarm(pwmTimer, 125, true, 0);      // 125us auto-reload → 500 Hz LED refresh
 }
 
 void setEffectFromFrames(const Frame *frames, size_t n) {
@@ -291,12 +299,13 @@ void setup() {
   pinMode(PIN_RED, OUTPUT);
   pinMode(PIN_YELLOW, OUTPUT);
   pinMode(PIN_GREEN, OUTPUT);
-  // No analogWriteResolution() / ledcSetup() — software PWM only, so OFF
-  // is genuinely OFF and digitalWrite stays authoritative.
+  // No analogWriteResolution() / ledcSetup() — PWM is software, in a
+  // hardware-timer ISR, so OFF is genuinely OFF and cadence is steady.
   hardOff(PIN_RED);
   hardOff(PIN_YELLOW);
   hardOff(PIN_GREEN);
   writeRgb(0, 0, 0);
+  pwmTimerStart();
 
   startWifi();
   server.begin();
@@ -347,7 +356,6 @@ void loop() {
   }
 
   tickAnimation();
-  // Software-PWM tick replaces delay(1). One pass through SW_PWM_LEVELS
-  // slots × ~125us = ~1ms, so loop cadence stays the same.
-  tickSoftPwm();
+  // PWM is in a hardware-timer ISR — loop() only updates duty targets.
+  delay(1);
 }
