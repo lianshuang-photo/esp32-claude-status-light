@@ -28,17 +28,55 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 
 HERE = Path(__file__).resolve().parent
 HOOK_CLIENT = HERE / "hook_client.py"
+SIGNAL_DAEMON = HERE / "signal_daemon.py"
 
 TAG_KEY = "_signal_light"
 TAG_VAL = True
+
+# Daemon health check — install_hooks is friendlier if it tells the user
+# upfront whether the daemon is running.
+DEFAULT_DAEMON_URL = os.environ.get("HOOK_DAEMON_URL", "http://127.0.0.1:7878/hook")
+DEFAULT_DAEMON_STATUS = DEFAULT_DAEMON_URL.rsplit("/", 1)[0] + "/api/status"
+
+
+def check_daemon() -> tuple[bool, str]:
+    """Returns (running, detail). detail is empty if running, else a hint."""
+    try:
+        req = urllib.request.Request(DEFAULT_DAEMON_STATUS, method="GET")
+        with urllib.request.urlopen(req, timeout=0.5) as r:
+            data = json.loads(r.read().decode("utf-8"))
+            board_online = data.get("board", {}).get("online", False)
+            board_host = data.get("board", {}).get("host", "?")
+            return True, f"board {board_host} {'online ✓' if board_online else 'OFFLINE — check board.host'}"
+    except (urllib.error.URLError, socket.timeout, OSError) as exc:
+        return False, f"daemon not reachable at {DEFAULT_DAEMON_URL.rsplit('/',1)[0]} ({exc.__class__.__name__})"
+
+
+def check_python_works() -> bool:
+    """Make sure python3 is callable and hook_client imports cleanly."""
+    import subprocess
+    try:
+        # Run hook_client with empty stdin + a bogus URL we know won't connect,
+        # so we get exit 0 (it always exits 0 on network failure) without
+        # actually triggering anything. This proves the file parses and runs.
+        r = subprocess.run(
+            ["python3", str(HOOK_CLIENT), "--url", "http://127.0.0.1:1"],
+            input="", capture_output=True, text=True, timeout=3,
+        )
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
 
 # ------------------------------------------------------------------------------
 # Claude Code: events whose hook the user usually expects us to attach to.
@@ -324,22 +362,69 @@ def main() -> int:
     agents = args.agent or ["claude", "codex"]
 
     if not args.apply and not args.preview_merged:
-        print("=" * 60)
+        print("=" * 64)
         print("DRY-RUN — nothing will be written.")
         print("  --preview-merged   → see full merged config in /tmp/")
         print("  --apply            → write for real (always backs up first)")
         print("  --uninstall        → remove our hooks (combine with --apply)")
-        print("=" * 60)
+        print("=" * 64)
 
+    # Pre-flight: hook_client.py exists?
     print(f"\nhook_client: {HOOK_CLIENT}")
     if not HOOK_CLIENT.exists():
-        print(f"!! hook_client.py missing at {HOOK_CLIENT}", file=sys.stderr)
+        print(f"  !! hook_client.py missing at {HOOK_CLIENT}", file=sys.stderr)
         return 2
+
+    # Pre-flight: python3 works and hook_client imports?
+    if not check_python_works():
+        print(f"  !! 'python3 {HOOK_CLIENT.name} --help' failed.")
+        print(f"     Check that python3 is on PATH and the file is intact.")
+        return 2
+    print(f"  ✓ python3 + hook_client OK")
+
+    # Pre-flight: daemon running?
+    running, detail = check_daemon()
+    if running:
+        print(f"  ✓ daemon running, {detail}")
+    else:
+        print(f"  ⚠ {detail}")
+        print(f"     Hooks will still install, but won't drive the LED until you start the daemon:")
+        print(f"       python3 {SIGNAL_DAEMON}")
 
     if "claude" in agents:
         run_for_claude(args)
     if "codex" in agents:
         run_for_codex(args)
+
+    # Post-install guidance
+    if args.apply and not args.uninstall:
+        print()
+        print("=" * 64)
+        print("Installed. Next steps:")
+        print()
+        if not running:
+            print(f"  1. Start the daemon:")
+            print(f"       python3 {SIGNAL_DAEMON}")
+            print()
+        print(f"  2. Open http://127.0.0.1:7878 — confirm the board pill is green.")
+        print()
+        print(f"  3. Restart your agent session so it picks up the new hook config:")
+        if "claude" in agents:
+            print(f"       Claude Code: quit (Cmd+Q) and reopen, OR `/restart` in current session")
+        if "codex" in agents:
+            print(f"       Codex:       quit and reopen — Codex will prompt to TRUST the new hook")
+            print(f"                    (this is its security feature, choose 'allow')")
+        print()
+        print(f"  To remove later:")
+        print(f"       python3 {Path(__file__).name} --uninstall --apply")
+        print("=" * 64)
+
+    if args.uninstall and args.apply:
+        print()
+        print("=" * 64)
+        print("Uninstalled. Your other hooks (if any) are intact.")
+        print("Restart your agent session to drop the now-removed hook entries.")
+        print("=" * 64)
 
     print()
     return 0

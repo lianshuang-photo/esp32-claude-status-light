@@ -56,52 +56,62 @@ uint32_t lastWifiAttemptMs = 0;
 char lineBuf[CLIENT_RX_BUFFER];
 size_t lineLen = 0;
 
-// ===== Software PWM driven by a hardware timer ISR =====
-// We avoid ESP32's hardware LEDC (analogWrite) because once a GPIO gets
-// attached to a LEDC channel on ESP32-C3, subsequent digitalWrite() calls
-// become unreliable — "OFF doesn't actually turn off".
+// ===== LEDC hardware PWM =====
+// We use the ESP32 LEDC peripheral via low-level ledcAttach/ledcWrite,
+// NOT analogWrite. LEDC is a true hardware PWM generator; once configured
+// it runs completely independently of CPU / Wi-Fi / flash cache, so it
+// never flickers or stalls regardless of what the rest of the firmware
+// is doing.
 //
-// Earlier this PWM ran from loop() — but that meant any Wi-Fi or TCP work in
-// loop() would stretch the gap between PWM ticks and the LED would visibly
-// "dip" every ~1 s. Moving the tick into a hardware timer ISR guarantees a
-// rock-steady cadence regardless of what loop() is doing.
+// "OFF" guarantee: simply writing duty=0 to LEDC sometimes leaves a tiny
+// residual signal on ESP32-C3 (likely a 1-cycle glitch every PWM period),
+// which manifests as a faint glow on a sensitive LED. So when a channel
+// needs to be fully OFF, we ledcDetach() it and drive the GPIO HIGH (with
+// common-anode wiring HIGH = LED off). When the duty comes back up we
+// re-attach.
 //
-// Levels: 16. Period: 2 ms (≈ 500 Hz refresh). Slot tick: 125 us.
-const uint8_t  SW_PWM_LEVELS = 16;
-volatile uint8_t pwmDutyR = 0, pwmDutyY = 0, pwmDutyG = 0;
-volatile uint8_t pwmSlot = 0;
-hw_timer_t *pwmTimer = nullptr;
+// 8-bit resolution × 1 kHz frequency is plenty for status-light use.
 
-static inline void hardOn (uint8_t pin) { digitalWrite(pin, ACTIVE_LOW ? LOW  : HIGH); }
-static inline void hardOff(uint8_t pin) { digitalWrite(pin, ACTIVE_LOW ? HIGH : LOW ); }
+const uint32_t LEDC_FREQ_HZ = 1000;
+const uint8_t  LEDC_RES_BITS = 8;
+const uint8_t  LEDC_MAX = 255;
 
-void IRAM_ATTR pwmIsr() {
-  uint8_t slot = pwmSlot;
-  uint8_t dr = pwmDutyR, dy = pwmDutyY, dg = pwmDutyG;
-  (slot < dr) ? hardOn(PIN_RED)    : hardOff(PIN_RED);
-  (slot < dy) ? hardOn(PIN_YELLOW) : hardOff(PIN_YELLOW);
-  (slot < dg) ? hardOn(PIN_GREEN)  : hardOff(PIN_GREEN);
-  pwmSlot = (slot + 1) % SW_PWM_LEVELS;
+// Track whether each channel is currently attached (true) or detached + HIGH (false).
+bool ledcAttachedR = false, ledcAttachedY = false, ledcAttachedG = false;
+
+static inline void ledOffHard(uint8_t pin) {
+  // Common-anode: HIGH = off.
+  digitalWrite(pin, ACTIVE_LOW ? HIGH : LOW);
+}
+
+static inline void setChannel(uint8_t pin, uint8_t duty, bool &attached) {
+  if (duty == 0) {
+    if (attached) {
+      ledcDetach(pin);
+      pinMode(pin, OUTPUT);
+      attached = false;
+    }
+    ledOffHard(pin);
+  } else {
+    if (!attached) {
+      ledcAttach(pin, LEDC_FREQ_HZ, LEDC_RES_BITS);
+      attached = true;
+    }
+    // On common-anode wiring, duty 255 should be fully on → invert.
+    uint32_t hwDuty = ACTIVE_LOW ? (LEDC_MAX - duty) : duty;
+    ledcWrite(pin, hwDuty);
+  }
 }
 
 void writeRgb(uint8_t r, uint8_t y, uint8_t g) {
-  // Quantize 0..255 to 0..SW_PWM_LEVELS. Only literal 0 means OFF; any
-  // nonzero input keeps at least 1 level so dim states still glow.
-  pwmDutyR = (r == 0) ? 0 : (uint8_t)((uint16_t)r * SW_PWM_LEVELS / 255 + 1);
-  pwmDutyY = (y == 0) ? 0 : (uint8_t)((uint16_t)y * SW_PWM_LEVELS / 255 + 1);
-  pwmDutyG = (g == 0) ? 0 : (uint8_t)((uint16_t)g * SW_PWM_LEVELS / 255 + 1);
-  if (pwmDutyR > SW_PWM_LEVELS) pwmDutyR = SW_PWM_LEVELS;
-  if (pwmDutyY > SW_PWM_LEVELS) pwmDutyY = SW_PWM_LEVELS;
-  if (pwmDutyG > SW_PWM_LEVELS) pwmDutyG = SW_PWM_LEVELS;
+  setChannel(PIN_RED,    r, ledcAttachedR);
+  setChannel(PIN_YELLOW, y, ledcAttachedY);
+  setChannel(PIN_GREEN,  g, ledcAttachedG);
 }
 
-void pwmTimerStart() {
-  // Arduino-ESP32 3.x timer API: timerBegin(frequency_hz). 1 MHz means
-  // alarm count == microseconds. Fire every 125 us → 500 Hz LED refresh.
-  pwmTimer = timerBegin(1000000);
-  timerAttachInterrupt(pwmTimer, &pwmIsr);
-  timerAlarm(pwmTimer, 125, true, 0);  // 125us auto-reload, no count limit
-}
+// Legacy helpers (used during setup before LEDC is initialised):
+static inline void hardOn (uint8_t pin) { digitalWrite(pin, ACTIVE_LOW ? LOW  : HIGH); }
+static inline void hardOff(uint8_t pin) { digitalWrite(pin, ACTIVE_LOW ? HIGH : LOW ); }
 
 void setEffectFromFrames(const Frame *frames, size_t n) {
   if (n > MAX_FRAMES) n = MAX_FRAMES;
@@ -132,6 +142,8 @@ void tickAnimation() {
   frameIdx = (frameIdx + 1) % effectLen;
   frameStartedMs = millis();
   Frame &nxt = effect[frameIdx];
+  Serial.printf("[FRM ] →%u r=%u y=%u g=%u (dwell=%ums)\n",
+                (unsigned)frameIdx, (unsigned)nxt.r, (unsigned)nxt.y, (unsigned)nxt.g, (unsigned)nxt.ms);
   writeRgb(nxt.r, nxt.y, nxt.g);
 }
 
@@ -286,14 +298,12 @@ void setup() {
   pinMode(PIN_RED, OUTPUT);
   pinMode(PIN_YELLOW, OUTPUT);
   pinMode(PIN_GREEN, OUTPUT);
-  // No analogWriteResolution() / ledcSetup() — software PWM in a hardware
-  // timer ISR so OFF is truly OFF and cadence is rock-steady even when
-  // loop() is busy with Wi-Fi / TCP work.
+  // Start in fully-off state. writeRgb() lazily attaches LEDC channels
+  // only when a nonzero duty is set.
   hardOff(PIN_RED);
   hardOff(PIN_YELLOW);
   hardOff(PIN_GREEN);
   writeRgb(0, 0, 0);
-  pwmTimerStart();
   startWifi();
   server.begin();
   lastDaemonMsgMs = millis();

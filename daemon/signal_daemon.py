@@ -625,7 +625,22 @@ class Handler(BaseHTTPRequestHandler):
     def _host_ok(self) -> bool:
         host = self.headers.get("Host", "")
         host_only = host.split(":")[0]
-        return host_only in ("127.0.0.1", "localhost", "::1", "")
+        # Always allow loopback.
+        if host_only in ("127.0.0.1", "localhost", "::1", ""):
+            return True
+        # If the operator chose to bind to all interfaces (server.host="0.0.0.0"),
+        # they're explicitly opting into LAN exposure → allow any Host header
+        # that matches an IPv4 literal or *.local hostname (DNS rebinding still
+        # blocked because attacker-controlled domains won't match either).
+        server_host = (CFG.server().get("host") if "CFG" in globals() else "127.0.0.1") or "127.0.0.1"
+        if server_host == "0.0.0.0":
+            # Accept IPv4 literal (192.168.x.x, 10.x.x.x, 172.16-31.x.x) or .local
+            if host_only.endswith(".local"):
+                return True
+            parts = host_only.split(".")
+            if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+                return True
+        return False
 
     def _send_bytes(self, code: int, body: bytes, ctype: str = "text/plain; charset=utf-8") -> None:
         self.send_response(code)
