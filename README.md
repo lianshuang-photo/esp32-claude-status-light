@@ -381,6 +381,14 @@ profile/brightness/tempo changes.
 
 ## Troubleshooting
 
+For a deep dive into every bug we hit while building this — wrong PWM,
+LED stuck on after 11 blinks, USB-CDC silent serial, Wi-Fi reboot loops,
+Codex not reloading hooks, and more — see [**docs/TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md).
+It documents the real failure modes, why they happen on ESP32-C3 specifically,
+and the exact fix for each.
+
+Quick reference for the most common symptoms:
+
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Board doesn't show up as `/dev/cu.*` | Power-only USB cable | Use a data cable |
