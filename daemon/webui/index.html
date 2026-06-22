@@ -16,6 +16,9 @@
       </div>
     </div>
     <div class="topbar-right">
+      <button id="ble-prov-btn" class="ble-btn" type="button" title="通过蓝牙给板子配置 Wi-Fi">
+        🔧 配网
+      </button>
       <div class="filter-group" role="tablist" aria-label="agent filter">
         <button class="filter-btn is-active" data-scope="all" type="button">All <span class="filter-count" id="cnt-all">0</span></button>
         <button class="filter-btn" data-scope="claude" type="button">Claude <span class="filter-count" id="cnt-claude">0</span></button>
@@ -214,6 +217,50 @@
   <footer>
     <div>signal-light · localhost only · config: <code id="cfg-path">~/.signal_light/config.json</code></div>
   </footer>
+
+  <!-- BLE provisioning modal (放在 body 末尾, 确保 position:fixed 不被 header 的 sticky 容器约束) -->
+  <div id="ble-modal" class="ble-modal hidden">
+    <div class="ble-modal-backdrop"></div>
+    <div class="ble-modal-card">
+      <div class="ble-modal-header">
+        <h2>🔧 蓝牙配网</h2>
+        <button class="ble-modal-close" id="ble-modal-close" type="button">✕</button>
+      </div>
+
+      <!-- step 1: pick board -->
+      <div class="ble-step" data-step="1">
+        <p class="ble-help">点下面按钮, Chrome 会弹出附近的板子列表 (名字带 <code>SignalLight</code>). 选你的板子.</p>
+        <button id="ble-pick-board" class="ble-cta" type="button">📡 扫描并选择板子</button>
+      </div>
+
+      <!-- step 2: pick wifi -->
+      <div class="ble-step hidden" data-step="2">
+        <p class="ble-help">已连上 <strong id="ble-board-name">—</strong>. 正在读板子扫到的 Wi-Fi 列表...</p>
+        <div class="ble-wifi-loading" id="ble-wifi-loading">⟳ 扫描中</div>
+        <div class="ble-wifi-list" id="ble-wifi-list"></div>
+        <div class="ble-form hidden" id="ble-form">
+          <div class="ble-form-row">
+            <label>SSID</label>
+            <input id="ble-ssid" type="text" placeholder="选上面或手填" />
+          </div>
+          <div class="ble-form-row">
+            <label>密码</label>
+            <input id="ble-psk" type="password" placeholder="如果是开放网络可留空" />
+          </div>
+          <button id="ble-submit" class="ble-cta" type="button">🚀 让板子连接</button>
+        </div>
+      </div>
+
+      <!-- step 3: result -->
+      <div class="ble-step hidden" data-step="3">
+        <div class="ble-progress" id="ble-progress">⟳ 板子正在连接 Wi-Fi...</div>
+        <div class="ble-result hidden" id="ble-result"></div>
+        <button id="ble-close-after" class="ble-cta hidden" type="button">完成</button>
+      </div>
+
+      <div class="ble-warn" id="ble-warn"></div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>

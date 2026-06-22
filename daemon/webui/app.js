@@ -677,10 +677,226 @@ function wireFilterButtons() {
   });
 }
 
+// ---------------- BLE provisioning (Web Bluetooth) ----------------
+
+// UUIDs must match the firmware constants exactly.
+const BLE_SERVICE_UUID    = 'a2c9b001-1234-4abc-8def-5f6c7d8e9012';
+const BLE_CHAR_SCAN_UUID  = 'a2c9b002-1234-4abc-8def-5f6c7d8e9012';
+const BLE_CHAR_CMD_UUID   = 'a2c9b003-1234-4abc-8def-5f6c7d8e9012';
+const BLE_CHAR_STAT_UUID  = 'a2c9b004-1234-4abc-8def-5f6c7d8e9012';
+
+const bleState = {
+  device: null,
+  server: null,
+  service: null,
+  chars: { scan: null, cmd: null, stat: null },
+};
+
+function $$$show(stepNum) {
+  document.querySelectorAll('.ble-step').forEach(s => {
+    s.classList.toggle('hidden', s.getAttribute('data-step') !== String(stepNum));
+  });
+}
+
+function bleWarn(msg) {
+  const w = $('#ble-warn');
+  if (!msg) { w.classList.remove('show'); return; }
+  w.textContent = '⚠ ' + msg;
+  w.classList.add('show');
+}
+
+function openBleModal() {
+  $('#ble-modal').classList.remove('hidden');
+  $$$show(1);
+  bleWarn('');
+  if (!navigator.bluetooth) {
+    bleWarn('这个浏览器不支持 Web Bluetooth. 用 Chrome / Edge 打开本页面.');
+  }
+}
+
+async function closeBleModal() {
+  if (bleState.device && bleState.device.gatt && bleState.device.gatt.connected) {
+    try { bleState.device.gatt.disconnect(); } catch (e) {}
+  }
+  bleState.device = null;
+  bleState.server = null;
+  bleState.service = null;
+  bleState.chars = { scan: null, cmd: null, stat: null };
+  $('#ble-modal').classList.add('hidden');
+}
+
+async function blePickBoard() {
+  bleWarn('');
+  if (!navigator.bluetooth) {
+    bleWarn('浏览器不支持 Web Bluetooth.');
+    return;
+  }
+  try {
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'SignalLight' }],
+      optionalServices: [BLE_SERVICE_UUID],
+    });
+    bleState.device = dev;
+    $('#ble-board-name').textContent = dev.name || '(未命名)';
+    $$$show(2);
+    $('#ble-wifi-loading').classList.remove('hidden');
+    $('#ble-form').classList.add('hidden');
+
+    // connect
+    bleState.server  = await dev.gatt.connect();
+    bleState.service = await bleState.server.getPrimaryService(BLE_SERVICE_UUID);
+    bleState.chars.scan = await bleState.service.getCharacteristic(BLE_CHAR_SCAN_UUID);
+    bleState.chars.cmd  = await bleState.service.getCharacteristic(BLE_CHAR_CMD_UUID);
+    bleState.chars.stat = await bleState.service.getCharacteristic(BLE_CHAR_STAT_UUID);
+
+    // Read Wi-Fi list. First read may return empty (cache miss) — the board
+    // kicks off a scan, then we re-read after a short delay.
+    let aps = await readWifiList();
+    if (aps.length === 0) {
+      $('#ble-wifi-loading').textContent = '⟳ 板子正在扫 Wi-Fi (4 秒)…';
+      await new Promise(r => setTimeout(r, 4000));
+      aps = await readWifiList();
+    }
+    if (aps.length === 0) {
+      $('#ble-wifi-loading').textContent = '⟳ 还在扫... 再等等';
+      await new Promise(r => setTimeout(r, 4000));
+      aps = await readWifiList();
+    }
+    buildWifiList(aps);
+  } catch (e) {
+    bleWarn(`选择/连接失败: ${e.message || e}`);
+  }
+}
+
+async function readWifiList() {
+  try {
+    const buf = await bleState.chars.scan.readValue();
+    const txt = new TextDecoder().decode(buf);
+    return JSON.parse(txt);
+  } catch (e) {
+    console.warn('readWifiList failed', e);
+    return [];
+  }
+}
+
+function buildWifiList(aps) {
+  $('#ble-wifi-loading').classList.add('hidden');
+  $('#ble-form').classList.remove('hidden');
+  const root = $('#ble-wifi-list');
+  root.innerHTML = '';
+  if (!aps.length) {
+    root.innerHTML = '<div class="ble-help" style="text-align:center">板子没扫到任何 Wi-Fi</div>';
+    return;
+  }
+  // sort by signal strength
+  aps.sort((a, b) => (b.rssi || -999) - (a.rssi || -999));
+  for (const ap of aps) {
+    const row = el('div', {
+      class: 'ble-wifi-row',
+      onclick: () => selectWifi(row, ap),
+    },
+      el('span', { class: 'ble-wifi-lock' }, ap.open ? '🌐' : '🔒'),
+      el('span', { class: 'ble-wifi-ssid' }, ap.ssid),
+      el('span', { class: 'ble-wifi-meta' }, `${ap.rssi}dBm`),
+    );
+    root.appendChild(row);
+  }
+}
+
+function selectWifi(row, ap) {
+  $$('.ble-wifi-row').forEach(r => r.classList.remove('is-selected'));
+  row.classList.add('is-selected');
+  $('#ble-ssid').value = ap.ssid;
+  $('#ble-psk').focus();
+}
+
+async function bleSubmit() {
+  bleWarn('');
+  const ssid = $('#ble-ssid').value.trim();
+  const psk  = $('#ble-psk').value;
+  if (!ssid) {
+    bleWarn('SSID 不能空');
+    return;
+  }
+  if (!bleState.chars.cmd) {
+    bleWarn('BLE 还没连接. 退出重来');
+    return;
+  }
+
+  $$$show(3);
+  $('#ble-progress').textContent = '⟳ 板子正在连接 Wi-Fi…';
+  $('#ble-result').classList.add('hidden');
+  $('#ble-close-after').classList.add('hidden');
+
+  // listen for status notifications
+  try {
+    await bleState.chars.stat.startNotifications();
+    bleState.chars.stat.addEventListener('characteristicvaluechanged', onBleStatus);
+  } catch (e) { /* may already be on */ }
+
+  // write {ssid, psk}
+  const payload = JSON.stringify({ ssid, psk });
+  await bleState.chars.cmd.writeValue(new TextEncoder().encode(payload));
+}
+
+function onBleStatus(ev) {
+  const txt = new TextDecoder().decode(ev.target.value);
+  let s = {};
+  try { s = JSON.parse(txt); } catch (e) { return; }
+  console.log('[BLE status]', s);
+
+  const result = $('#ble-result');
+  if (s.state === 'connected' && s.ip) {
+    $('#ble-progress').classList.add('hidden');
+    result.classList.remove('hidden', 'is-err');
+    result.classList.add('is-ok');
+    result.innerHTML = `✅ 板子已连上 Wi-Fi <br/>IP: <strong>${s.ip}</strong><br/>` +
+      `<small>已自动更新 daemon 的 board.host 配置</small>`;
+    $('#ble-close-after').classList.remove('hidden');
+    // poke daemon to point at the new IP
+    updateDaemonBoardHost(s.ip);
+  } else if (s.state === 'connecting') {
+    $('#ble-progress').textContent = '⟳ 已收到凭据, 板子在连 Wi-Fi…';
+  } else if (s.state === 'failed') {
+    $('#ble-progress').classList.add('hidden');
+    result.classList.remove('hidden', 'is-ok');
+    result.classList.add('is-err');
+    result.innerHTML = `❌ 板子连 Wi-Fi 失败. 密码错? 检查后重试.`;
+    $('#ble-close-after').classList.remove('hidden');
+    $('#ble-close-after').textContent = '退出';
+  } else if (s.state === 'error_payload') {
+    bleWarn('板子说凭据格式错了');
+  }
+}
+
+async function updateDaemonBoardHost(ip) {
+  try {
+    const r = await fetch('/api/config');
+    const cfg = await r.json();
+    cfg.board.host = ip;
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    console.log('daemon board.host updated to', ip);
+  } catch (e) { console.warn('failed to update daemon host', e); }
+}
+
+function wireBleButtons() {
+  $('#ble-prov-btn').addEventListener('click', openBleModal);
+  $('#ble-modal-close').addEventListener('click', closeBleModal);
+  $('#ble-modal .ble-modal-backdrop').addEventListener('click', closeBleModal);
+  $('#ble-pick-board').addEventListener('click', blePickBoard);
+  $('#ble-submit').addEventListener('click', bleSubmit);
+  $('#ble-close-after').addEventListener('click', closeBleModal);
+}
+
 (async function main() {
   await loadConfig();
   wireFilterButtons();
   wireDemoButtons();
   wireDisplayControls();
+  wireBleButtons();
   openStream();
 })();

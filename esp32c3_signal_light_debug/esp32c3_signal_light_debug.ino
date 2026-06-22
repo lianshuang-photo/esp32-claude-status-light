@@ -16,12 +16,38 @@
 #include <WiFi.h>
 #include <esp_system.h>
 #include <Preferences.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 
 // Persistent storage for "which Wi-Fi network worked last time", so reboots
 // can connect in ~1s instead of going through every entry from the top.
+// Also stores the most recent BLE-provisioned SSID/password.
 Preferences prefs;
-const char *NVS_NAMESPACE = "signal";
-const char *NVS_KEY_WIFI  = "last_wifi";
+const char *NVS_NAMESPACE   = "signal";
+const char *NVS_KEY_WIFI    = "last_wifi";
+const char *NVS_KEY_BLE_SSID = "ble_ssid";
+const char *NVS_KEY_BLE_PSK  = "ble_psk";
+
+// ===== BLE GATT (Wi-Fi provisioning over Bluetooth) =====
+// Anyone (Mac / phone) can connect, read the Wi-Fi scan list, write
+// SSID+password, and read back the resulting IP. No pairing — this is a
+// debug accessory, not a vault.
+#define BLE_SERVICE_UUID    "a2c9b001-1234-4abc-8def-5f6c7d8e9012"
+#define BLE_CHAR_SCAN_UUID  "a2c9b002-1234-4abc-8def-5f6c7d8e9012"  // read: JSON list of APs
+#define BLE_CHAR_CMD_UUID   "a2c9b003-1234-4abc-8def-5f6c7d8e9012"  // write: {"ssid":"x","psk":"y"}
+#define BLE_CHAR_STAT_UUID  "a2c9b004-1234-4abc-8def-5f6c7d8e9012"  // read/notify: {"state":"...","ip":"..."}
+
+BLEServer *bleServer = nullptr;
+BLECharacteristic *bleCharScan = nullptr;
+BLECharacteristic *bleCharCmd  = nullptr;
+BLECharacteristic *bleCharStat = nullptr;
+bool bleClientConnected = false;
+bool bleProvisioningPending = false;       // a {ssid, psk} write came in, main loop should act
+String bleProvSsid;
+String bleProvPsk;
+uint32_t bleStatusLastUpdateMs = 0;
 
 // Add as many Wi-Fi networks as you want. The board tries them in order on
 // every reconnect cycle and stays on the first one that works.
@@ -139,6 +165,10 @@ void setSolid(uint8_t r, uint8_t y, uint8_t g) {
   setEffectFromFrames(&f, 1);
 }
 
+// Per-frame serial logging eats real CPU on a single-core ESP32-C3 when
+// frames run at ~10 Hz. Set to true only when debugging frame timing.
+const bool LOG_FRAMES = false;
+
 void tickAnimation() {
   if (effectLen == 0) return;
   Frame &cur = effect[frameIdx];
@@ -149,8 +179,10 @@ void tickAnimation() {
   frameIdx = (frameIdx + 1) % effectLen;
   frameStartedMs = millis();
   Frame &nxt = effect[frameIdx];
-  Serial.printf("[FRM ] →%u r=%u y=%u g=%u (dwell=%ums)\n",
-                (unsigned)frameIdx, (unsigned)nxt.r, (unsigned)nxt.y, (unsigned)nxt.g, (unsigned)nxt.ms);
+  if (LOG_FRAMES) {
+    Serial.printf("[FRM ] →%u r=%u y=%u g=%u (dwell=%ums)\n",
+                  (unsigned)frameIdx, (unsigned)nxt.r, (unsigned)nxt.y, (unsigned)nxt.g, (unsigned)nxt.ms);
+  }
   writeRgb(nxt.r, nxt.y, nxt.g);
 }
 
@@ -231,19 +263,22 @@ size_t parseFrames(const char *src, Frame *outFrames, size_t maxFrames) {
 
 void handleLine(const char *line, WiFiClient &client) {
   lastDaemonMsgMs = millis();
-  // truncated echo
-  char preview[80];
-  size_t plen = strlen(line);
-  if (plen > sizeof(preview) - 1) plen = sizeof(preview) - 1;
-  memcpy(preview, line, plen);
-  preview[plen] = '\0';
-  Serial.printf("[RX  ] %s\n", preview);
-
   char typeBuf[16] = {0};
   const char *tk = findKey(line, "type");
-  if (tk && extractString(tk, typeBuf, sizeof(typeBuf))) {
-    if (strcmp(typeBuf, "ping") == 0) {
-      Serial.println("[PING] → PONG");
+  bool isPing = tk && extractString(tk, typeBuf, sizeof(typeBuf)) && strcmp(typeBuf, "ping") == 0;
+
+  // Only log non-ping traffic — pings come every 5s and dominate the serial log.
+  if (!isPing) {
+    char preview[80];
+    size_t plen = strlen(line);
+    if (plen > sizeof(preview) - 1) plen = sizeof(preview) - 1;
+    memcpy(preview, line, plen);
+    preview[plen] = '\0';
+    Serial.printf("[RX  ] %s\n", preview);
+  }
+
+  if (tk) {
+    if (isPing) {
       client.print("{\"type\":\"pong\"}\n");
       return;
     }
@@ -279,13 +314,25 @@ void handleClientByte(WiFiClient &client) {
 
 size_t currentWifiIdx = 0;
 
+// If the board has been BLE-provisioned, those credentials take priority
+// over WIFI_NETWORKS[]. -1 means "no BLE creds, use compiled-in list".
+String bleSsidLive;
+String blePskLive;
+bool useBleCreds() { return bleSsidLive.length() > 0; }
+
 void startWifi() {
-  if (WIFI_NETWORKS_COUNT == 0) return;
-  const WifiCred &net = WIFI_NETWORKS[currentWifiIdx];
-  Serial.printf("[WIFI] trying #%u %s\n", (unsigned)currentWifiIdx, net.ssid);
   WiFi.disconnect(false);
   WiFi.mode(WIFI_STA);
-  WiFi.begin(net.ssid, net.password);
+  if (useBleCreds()) {
+    Serial.printf("[WIFI] trying BLE-provisioned %s\n", bleSsidLive.c_str());
+    WiFi.begin(bleSsidLive.c_str(), blePskLive.c_str());
+  } else if (WIFI_NETWORKS_COUNT > 0) {
+    const WifiCred &net = WIFI_NETWORKS[currentWifiIdx];
+    Serial.printf("[WIFI] trying #%u %s\n", (unsigned)currentWifiIdx, net.ssid);
+    WiFi.begin(net.ssid, net.password);
+  } else {
+    Serial.println("[WIFI] no credentials, waiting for BLE provisioning");
+  }
   lastWifiAttemptMs = millis();
   Frame yellow[] = { { 0, 80, 0, 300 }, { 0, 0, 0, 200 } };
   setEffectFromFrames(yellow, 2);
@@ -294,7 +341,174 @@ void startWifi() {
 void maintainWifi() {
   if (WiFi.status() == WL_CONNECTED) return;
   if (millis() - lastWifiAttemptMs <= WIFI_PER_NETWORK_TIMEOUT_MS) return;
-  currentWifiIdx = (currentWifiIdx + 1) % WIFI_NETWORKS_COUNT;
+  // Don't rotate if BLE creds are in use — keep retrying that one network.
+  if (!useBleCreds() && WIFI_NETWORKS_COUNT > 0) {
+    currentWifiIdx = (currentWifiIdx + 1) % WIFI_NETWORKS_COUNT;
+  }
+  startWifi();
+}
+
+// ===== BLE provisioning =====
+
+void bleUpdateStatus(const char *state, const String &ip) {
+  if (!bleCharStat) return;
+  String json = "{\"state\":\"";
+  json += state;
+  json += "\",\"ip\":\"";
+  json += ip;
+  json += "\"}";
+  bleCharStat->setValue(json.c_str());
+  if (bleClientConnected) {
+    bleCharStat->notify();
+  }
+  bleStatusLastUpdateMs = millis();
+}
+
+// Cache of the most recent Wi-Fi scan results, refreshed by the main loop
+// (NOT by the BLE read callback, which runs in a context that can't safely
+// call long-running radio operations).
+String wifiScanCacheJson = "[]";
+uint32_t wifiScanCacheAtMs = 0;
+volatile bool wifiScanRequested = false;
+const uint32_t WIFI_SCAN_CACHE_TTL_MS = 30000;  // 30s
+const uint32_t WIFI_SCAN_MIN_INTERVAL_MS = 5000;  // never scan more than once per 5s
+
+void doWifiScanIntoCache() {
+  // Briefly disconnect Wi-Fi STA so the scan returns real results.
+  bool wasConnected = (WiFi.status() == WL_CONNECTED);
+  if (wasConnected || WiFi.status() == WL_DISCONNECTED) {
+    // disconnect=true forces the connect attempt to abort so scan can run
+    WiFi.disconnect(false, false);
+    delay(50);
+  }
+  Serial.println("[BLE ] running Wi-Fi scan...");
+  int n = WiFi.scanNetworks(false /*async*/, true /*show hidden*/, false, 250);
+  String json = "[";
+  for (int i = 0; i < n; i++) {
+    if (i > 0) json += ",";
+    json += "{\"ssid\":\"";
+    String s = WiFi.SSID(i);
+    s.replace("\\", "\\\\");
+    s.replace("\"", "\\\"");
+    json += s;
+    json += "\",\"rssi\":";
+    json += String(WiFi.RSSI(i));
+    json += ",\"open\":";
+    json += (WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "true" : "false");
+    json += "}";
+    if (json.length() > 480) break;
+  }
+  json += "]";
+  WiFi.scanDelete();
+  wifiScanCacheJson = json;
+  wifiScanCacheAtMs = millis();
+  Serial.printf("[BLE ] scan: %d networks, %u bytes JSON\n", n, (unsigned)json.length());
+
+  // Restart Wi-Fi connection attempt so we keep trying in the background.
+  startWifi();
+}
+
+// BLE callback: just returns the cached JSON. Real scanning happens in loop().
+class ScanCallbacks : public BLECharacteristicCallbacks {
+  void onRead(BLECharacteristic *c) override {
+    Serial.printf("[BLE ] scan read (cache age %us)\n",
+                  (unsigned)((millis() - wifiScanCacheAtMs) / 1000));
+    if (wifiScanCacheAtMs == 0 ||
+        millis() - wifiScanCacheAtMs > WIFI_SCAN_CACHE_TTL_MS) {
+      wifiScanRequested = true;  // ask main loop for a fresh scan
+    }
+    c->setValue(wifiScanCacheJson.c_str());
+  }
+};
+
+// Receive {"ssid":"...","psk":"..."} from the client.
+class CmdCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *c) override {
+    String payload = c->getValue().c_str();
+    Serial.printf("[BLE ] cmd recv: %s\n", payload.c_str());
+    // tiny JSON extract — no library needed
+    int s1 = payload.indexOf("\"ssid\"");
+    int p1 = payload.indexOf("\"psk\"");
+    if (s1 < 0 || p1 < 0) {
+      bleUpdateStatus("error_payload", "");
+      return;
+    }
+    int sq1 = payload.indexOf('"', payload.indexOf(':', s1));
+    int sq2 = payload.indexOf('"', sq1 + 1);
+    int pq1 = payload.indexOf('"', payload.indexOf(':', p1));
+    int pq2 = payload.indexOf('"', pq1 + 1);
+    if (sq1 < 0 || sq2 < 0 || pq1 < 0 || pq2 < 0) {
+      bleUpdateStatus("error_payload", "");
+      return;
+    }
+    bleProvSsid = payload.substring(sq1 + 1, sq2);
+    bleProvPsk  = payload.substring(pq1 + 1, pq2);
+    bleProvisioningPending = true;
+    bleUpdateStatus("connecting", "");
+  }
+};
+
+class ServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer *) override {
+    bleClientConnected = true;
+    Serial.println("[BLE ] client connected");
+  }
+  void onDisconnect(BLEServer *) override {
+    bleClientConnected = false;
+    Serial.println("[BLE ] client disconnected");
+    BLEDevice::startAdvertising();  // resume advertising after disconnect
+  }
+};
+
+void bleStart() {
+  // Device name = "SignalLight-XXXX" where XXXX = last 4 hex of MAC
+  uint64_t mac = ESP.getEfuseMac();
+  char name[24];
+  snprintf(name, sizeof(name), "SignalLight-%04X", (uint16_t)(mac & 0xFFFF));
+  Serial.printf("[BLE ] device name: %s\n", name);
+
+  BLEDevice::init(name);
+  bleServer = BLEDevice::createServer();
+  bleServer->setCallbacks(new ServerCallbacks());
+
+  BLEService *svc = bleServer->createService(BLE_SERVICE_UUID);
+
+  bleCharScan = svc->createCharacteristic(
+    BLE_CHAR_SCAN_UUID,
+    BLECharacteristic::PROPERTY_READ);
+  bleCharScan->setCallbacks(new ScanCallbacks());
+
+  bleCharCmd = svc->createCharacteristic(
+    BLE_CHAR_CMD_UUID,
+    BLECharacteristic::PROPERTY_WRITE);
+  bleCharCmd->setCallbacks(new CmdCallbacks());
+
+  bleCharStat = svc->createCharacteristic(
+    BLE_CHAR_STAT_UUID,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  bleCharStat->addDescriptor(new BLE2902());
+  bleUpdateStatus(useBleCreds() ? "wifi_known" : "waiting", "");
+
+  svc->start();
+
+  BLEAdvertising *adv = BLEDevice::getAdvertising();
+  adv->addServiceUUID(BLE_SERVICE_UUID);
+  adv->setScanResponse(true);
+  BLEDevice::startAdvertising();
+  Serial.println("[BLE ] advertising");
+}
+
+void bleApplyProvisioning() {
+  if (!bleProvisioningPending) return;
+  bleProvisioningPending = false;
+  Serial.printf("[BLE ] applying ssid=%s\n", bleProvSsid.c_str());
+  bleSsidLive = bleProvSsid;
+  blePskLive  = bleProvPsk;
+  prefs.putString(NVS_KEY_BLE_SSID, bleSsidLive);
+  prefs.putString(NVS_KEY_BLE_PSK,  blePskLive);
+  // Force a fresh connect attempt with the new credentials.
+  WiFi.disconnect(true);
+  delay(100);
   startWifi();
 }
 
@@ -312,19 +526,38 @@ void setup() {
   hardOff(PIN_GREEN);
   writeRgb(0, 0, 0);
 
-  // Load the index of the Wi-Fi that worked last boot. Falls back to 0 the
-  // first time the board ever runs this firmware.
   prefs.begin(NVS_NAMESPACE, false);
-  uint8_t savedIdx = prefs.getUChar(NVS_KEY_WIFI, 0);
-  if (savedIdx < WIFI_NETWORKS_COUNT) {
-    currentWifiIdx = savedIdx;
-    Serial.printf("[WIFI] resuming with last-known network #%u\n", (unsigned)savedIdx);
+
+  // BLE-provisioned credentials win over compiled-in WIFI_NETWORKS[].
+  bleSsidLive = prefs.getString(NVS_KEY_BLE_SSID, "");
+  blePskLive  = prefs.getString(NVS_KEY_BLE_PSK,  "");
+  if (useBleCreds()) {
+    Serial.printf("[NVS ] using BLE-provisioned SSID=%s\n", bleSsidLive.c_str());
+  } else {
+    uint8_t savedIdx = prefs.getUChar(NVS_KEY_WIFI, 0);
+    if (savedIdx < WIFI_NETWORKS_COUNT) {
+      currentWifiIdx = savedIdx;
+      Serial.printf("[WIFI] resuming with last-known network #%u\n", (unsigned)savedIdx);
+    }
   }
 
   startWifi();
   server.begin();
   lastDaemonMsgMs = millis();
   Serial.printf("[TCP ] listening on port %u\n", TCP_PORT);
+
+  // Only start BLE if we have NO Wi-Fi credentials at all. Otherwise BLE
+  // would steal main-loop CPU and make LED animations stutter.
+  // To re-enter provisioning mode after the fact: erase NVS or hold a
+  // button (TODO) for 3 s during boot.
+  bool haveAnyCreds = useBleCreds() || WIFI_NETWORKS_COUNT > 0;
+  if (!haveAnyCreds) {
+    Serial.println("[BLE ] no Wi-Fi creds, starting BLE provisioning");
+    bleStart();
+    wifiScanRequested = true;
+  } else {
+    Serial.println("[BLE ] Wi-Fi creds present, skipping BLE (run-time provisioning disabled)");
+  }
 }
 
 void loop() {
@@ -335,16 +568,21 @@ void loop() {
     prev = now;
     Serial.printf("[WIFI] status=%d\n", (int)now);
     if (now == WL_CONNECTED) {
+      String ip = WiFi.localIP().toString();
       Serial.print("[WIFI] connected, IP=");
-      Serial.println(WiFi.localIP());
+      Serial.println(ip);
       setSolid(0, 0, 0);
       lastDaemonMsgMs = millis();
-      // Remember which network worked so the next boot skips straight to it.
-      uint8_t saved = prefs.getUChar(NVS_KEY_WIFI, 255);
-      if (saved != currentWifiIdx) {
-        prefs.putUChar(NVS_KEY_WIFI, (uint8_t)currentWifiIdx);
-        Serial.printf("[WIFI] saved last-known network #%u to NVS\n", (unsigned)currentWifiIdx);
+      if (!useBleCreds()) {
+        uint8_t saved = prefs.getUChar(NVS_KEY_WIFI, 255);
+        if (saved != currentWifiIdx) {
+          prefs.putUChar(NVS_KEY_WIFI, (uint8_t)currentWifiIdx);
+          Serial.printf("[WIFI] saved last-known network #%u to NVS\n", (unsigned)currentWifiIdx);
+        }
       }
+      bleUpdateStatus("connected", ip);
+    } else if (now == WL_CONNECT_FAILED || now == WL_NO_SSID_AVAIL) {
+      bleUpdateStatus("failed", "");
     }
   }
 
@@ -370,6 +608,17 @@ void loop() {
     Serial.println("[WDG ] no daemon msgs, rebooting");
     delay(50);
     esp_restart();
+  }
+
+  // Handle any pending BLE-provisioned Wi-Fi credentials.
+  bleApplyProvisioning();
+
+  // If BLE client asked for a fresh Wi-Fi scan, do it from loop()
+  // (NOT from the BLE callback — scanNetworks is heavy and must run here).
+  if (wifiScanRequested &&
+      (wifiScanCacheAtMs == 0 || millis() - wifiScanCacheAtMs > WIFI_SCAN_MIN_INTERVAL_MS)) {
+    wifiScanRequested = false;
+    doWifiScanIntoCache();
   }
 
   tickAnimation();
